@@ -7,7 +7,7 @@ FLAGS 		+= 	-std=c++11
 ifdef DEBUG
 FLAGS		+=	-ggdb -O0
 else
-FLAGS		+=	-O2
+FLAGS		+=	-O0
 endif
 
 LIBS 		= 	
@@ -17,7 +17,7 @@ LDFLAGS		+=	$(FLAGS)
 SOURCES		= 	test.cxx
 OBJECTS		= 	$(SOURCES:.cxx=.o)
 DEPENDENCIES=	$(SOURCES:.cxx=.d)
-EXECUTABLE	=	test
+EXECUTABLE	=	argstest
 
 .PHONY: all clean pages runtests uninstall install installman
 
@@ -54,8 +54,8 @@ doc/man:
 	doxygen Doxyfile
 	bzip2 doc/man/man3/*.3
 
-runtests: test
-	./test
+runtests: ${EXECUTABLE}
+	./${EXECUTABLE}
 
 %.o: %.cxx
 	$(CXX) $< -o $@ $(CFLAGS)
