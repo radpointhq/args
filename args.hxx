@@ -1,4 +1,8 @@
-/* Copyright (c) 2016-2017 Taylor C. Richberger <taywee@gmx.com> and Pavel
+/* A simple header-only C++ argument parser library.
+ *
+ * https://github.com/Taywee/args
+ *
+ * Copyright (c) 2016-2019 Taylor C. Richberger <taywee@gmx.com> and Pavel
  * Belikov
  * 
  * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -40,6 +44,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <type_traits>
+#include <cstddef>
 
 #ifdef ARGS_TESTNAMESPACE
 namespace argstest
@@ -748,7 +753,7 @@ namespace args
         const size_t min;
         const size_t max;
 
-        Nargs(size_t min_, size_t max_) : min(min_), max(max_)
+        Nargs(size_t min_, size_t max_) : min{min_}, max{max_}
         {
 #ifndef ARGS_NOEXCEPT
             if (max < min)
@@ -758,7 +763,7 @@ namespace args
 #endif
         }
 
-        Nargs(size_t num_) : min(num_), max(num_)
+        Nargs(size_t num_) : min{num_}, max{num_}
         {
         }
 
@@ -786,6 +791,7 @@ namespace args
 #ifdef ARGS_NOEXCEPT
             /// Only for ARGS_NOEXCEPT
             mutable Error error = Error::None;
+            mutable std::string errorMsg;
 #endif
 
         public:
@@ -893,6 +899,7 @@ namespace args
                 matched = false;
 #ifdef ARGS_NOEXCEPT
                 error = Error::None;
+                errorMsg.clear();
 #endif
             }
 
@@ -901,6 +908,12 @@ namespace args
             virtual Error GetError() const
             {
                 return error;
+            }
+
+            /// Only for ARGS_NOEXCEPT
+            std::string GetErrorMsg() const
+            {
+                return errorMsg;
             }
 #endif
     };
@@ -1081,11 +1094,12 @@ namespace args
                 {
                     if ((GetOptions() & Options::Single) != Options::None && matched)
                     {
-#ifdef ARGS_NOEXCEPT
-                        error = Error::Extra;
-#else
                         std::ostringstream problem;
                         problem << "Flag '" << flag.str() << "' was passed multiple times, but is only allowed to be passed once";
+#ifdef ARGS_NOEXCEPT
+                        error = Error::Extra;
+                        errorMsg = problem.str();
+#else
                         throw ExtraError(problem.str());
 #endif
                     }
@@ -1109,13 +1123,12 @@ namespace args
             {
                 if (!Matched() && IsRequired())
                 {
-#ifdef ARGS_NOEXCEPT
-                        (void)shortPrefix;
-                        (void)longPrefix;
-                        error = Error::Required;
-#else
                         std::ostringstream problem;
                         problem << "Flag '" << matcher.GetLongOrAny().str(shortPrefix, longPrefix) << "' is required";
+#ifdef ARGS_NOEXCEPT
+                        error = Error::Required;
+                        errorMsg = problem.str();
+#else
                         throw RequiredError(problem.str());
 #endif
                 }
@@ -1260,6 +1273,7 @@ namespace args
                 ready = true;
 #ifdef ARGS_NOEXCEPT
                 error = Error::None;
+                errorMsg.clear();
 #endif
             }
 
@@ -1283,11 +1297,12 @@ namespace args
             {
                 if (IsRequired() && !Matched())
                 {
-#ifdef ARGS_NOEXCEPT
-                    error = Error::Required;
-#else
                     std::ostringstream problem;
                     problem << "Option '" << Name() << "' is required";
+#ifdef ARGS_NOEXCEPT
+                    error = Error::Required;
+                    errorMsg = problem.str();
+#else
                     throw RequiredError(problem.str());
 #endif
                 }
@@ -1460,7 +1475,9 @@ namespace args
              */
             std::vector<Base *>::size_type MatchedChildren() const
             {
-                return std::count_if(std::begin(Children()), std::end(Children()), [](const Base *child){return child->Matched();});
+                // Cast to avoid warnings from -Wsign-conversion
+                return static_cast<std::vector<Base *>::size_type>(
+                        std::count_if(std::begin(Children()), std::end(Children()), [](const Base *child){return child->Matched();}));
             }
 
             /** Whether or not this group matches validation
@@ -1554,6 +1571,7 @@ namespace args
                 }
 #ifdef ARGS_NOEXCEPT
                 error = Error::None;
+                errorMsg.clear();
 #endif
             }
 
@@ -1619,11 +1637,11 @@ namespace args
 
         public:
             Subparser(std::vector<std::string> args_, ArgumentParser &parser_, const Command &command_, const HelpParams &helpParams_)
-                : args(std::move(args_)), parser(&parser_), helpParams(helpParams_), command(command_)
+                : Group({}, Validators::AllChildGroups), args(std::move(args_)), parser(&parser_), helpParams(helpParams_), command(command_)
             {
             }
 
-            Subparser(const Command &command_, const HelpParams &helpParams_) : helpParams(helpParams_), command(command_)
+            Subparser(const Command &command_, const HelpParams &helpParams_) : Group({}, Validators::AllChildGroups), helpParams(helpParams_), command(command_)
             {
             }
 
@@ -1750,7 +1768,7 @@ namespace args
                     {
                         parserCoroutine(coro.Parser());
                     }
-                    catch (args::SubparserError)
+                    catch (args::SubparserError&)
                     {
                     }
 #else
@@ -2114,17 +2132,23 @@ namespace args
                     return;
                 }
 
+                auto onValidationError = [&]
+                {
+                    std::ostringstream problem;
+                    problem << "Group validation failed somewhere!";
+#ifdef ARGS_NOEXCEPT
+                    error = Error::Validation;
+                    errorMsg = problem.str();
+#else
+                    throw ValidationError(problem.str());
+#endif
+                };
+
                 for (Base *child: Children())
                 {
                     if (child->IsGroup() && !child->Matched())
                     {
-#ifdef ARGS_NOEXCEPT
-                        error = Error::Validation;
-#else
-                        std::ostringstream problem;
-                        problem << "Group validation failed somewhere!";
-                        throw ValidationError(problem.str());
-#endif
+                        onValidationError();
                     }
 
                     child->Validate(shortprefix, longprefix);
@@ -2133,15 +2157,20 @@ namespace args
                 if (subparser != nullptr)
                 {
                     subparser->Validate(shortprefix, longprefix);
+                    if (!subparser->Matched())
+                    {
+                        onValidationError();
+                    }
                 }
 
                 if (selectedCommand == nullptr && commandIsRequired && (Group::HasCommand() || subparserHasCommand))
                 {
-#ifdef ARGS_NOEXCEPT
-                    error = Error::Validation;
-#else
                     std::ostringstream problem;
                     problem << "Command is required";
+#ifdef ARGS_NOEXCEPT
+                    error = Error::Validation;
+                    errorMsg = problem.str();
+#else
                     throw ValidationError(problem.str());
 #endif
                 }
@@ -2360,6 +2389,7 @@ namespace args
                         throw ParseError(errorMessage);
 #else
                         error = Error::Parse;
+                        errorMsg = errorMessage;
                         return false;
 #endif
                     }
@@ -2376,10 +2406,12 @@ namespace args
                     }
                 } else
                 {
+                    const std::string errorMessage("Flag could not be matched: " + arg);
 #ifndef ARGS_NOEXCEPT
-                    throw ParseError("Flag could not be matched: " + arg);
+                    throw ParseError(errorMessage);
 #else
                     error = Error::Parse;
+                    errorMsg = errorMessage;
                     return false;
 #endif
                 }
@@ -2410,6 +2442,7 @@ namespace args
                             throw ParseError(errorMessage);
 #else
                             error = Error::Parse;
+                            errorMsg = errorMessage;
                             return false;
 #endif
                         }
@@ -2431,10 +2464,12 @@ namespace args
                         }
                     } else
                     {
+                        const std::string errorMessage("Flag could not be matched: '" + std::string(1, arg) + "'");
 #ifndef ARGS_NOEXCEPT
-                        throw ParseError("Flag could not be matched: '" + std::string(1, arg) + "'");
+                        throw ParseError(errorMessage);
 #else
                         error = Error::Parse;
+                        errorMsg = errorMessage;
                         return false;
 #endif
                     }
@@ -2607,10 +2642,12 @@ namespace args
                         auto itCommand = std::find_if(commands.begin(), commands.end(), [&chunk](Command *c) { return c->Name() == chunk; });
                         if (itCommand == commands.end())
                         {
+                            const std::string errorMessage("Unknown command: " + chunk);
 #ifndef ARGS_NOEXCEPT
-                            throw ParseError("Unknown command: " + chunk);
+                            throw ParseError(errorMessage);
 #else
                             error = Error::Parse;
+                            errorMsg = errorMessage;
                             return it;
 #endif
                         }
@@ -2658,10 +2695,12 @@ namespace args
                             }
                         } else
                         {
+                            const std::string errorMessage("Passed in argument, but no positional arguments were ready to receive it: " + chunk);
 #ifndef ARGS_NOEXCEPT
-                            throw ParseError("Passed in argument, but no positional arguments were ready to receive it: " + chunk);
+                            throw ParseError(errorMessage);
 #else
                             error = Error::Parse;
+                            errorMsg = errorMessage;
                             return it;
 #endif
                         }
@@ -2674,7 +2713,7 @@ namespace args
 #endif
                         readCompletion = true;
                         ++it;
-                        size_t argsLeft = std::distance(it, end);
+                        const auto argsLeft = static_cast<size_t>(std::distance(it, end));
                         if (completion->cword == 0 || argsLeft <= 1 || completion->cword >= argsLeft)
                         {
 #ifndef ARGS_NOEXCEPT
@@ -2693,13 +2732,15 @@ namespace args
                                 if (idx > 0 && curArgs[idx] == "=")
                                 {
                                     curArgs[idx - 1] += "=";
+                                    // Avoid warnings from -Wsign-conversion
+                                    const auto signedIdx = static_cast<std::ptrdiff_t>(idx);
                                     if (idx + 1 < curArgs.size())
                                     {
                                         curArgs[idx - 1] += curArgs[idx + 1];
-                                        curArgs.erase(curArgs.begin() + idx, curArgs.begin() + idx + 2);
+                                        curArgs.erase(curArgs.begin() + signedIdx, curArgs.begin() + signedIdx + 2);
                                     } else
                                     {
-                                        curArgs.erase(curArgs.begin() + idx);
+                                        curArgs.erase(curArgs.begin() + signedIdx);
                                     }
                                 } else
                                 {
@@ -2796,10 +2837,12 @@ namespace args
             {
                 if (longseparator_.empty())
                 {
+                    const std::string errorMessage("longseparator can not be set to empty");
 #ifdef ARGS_NOEXCEPT
                     error = Error::Usage;
+                    errorMsg = errorMessage;
 #else
-                    throw UsageError("longseparator can not be set to empty");
+                    throw UsageError(errorMessage);
 #endif
                 } else
                 {
@@ -3125,6 +3168,7 @@ namespace args
             {
 #ifdef ARGS_NOEXCEPT
                     error = Error::Help;
+                    errorMsg = Name();
 #else
                     throw Help(Name());
 #endif
@@ -3225,9 +3269,14 @@ namespace args
         operator ()(const std::string &name, const std::string &value, T &destination)
         {
             std::istringstream ss(value);
-            ss >> destination >> std::ws;
+            bool failed = !(ss >> destination);
 
-            if (ss.rdbuf()->in_avail() > 0)
+            if (!failed)
+            {
+                ss >> std::ws;
+            }
+
+            if (ss.rdbuf()->in_avail() > 0 || failed)
             {
 #ifdef ARGS_NOEXCEPT
                 (void)name;
@@ -3388,6 +3437,7 @@ namespace args
         protected:
 
             List<T> values;
+            const List<T> defaultValues;
             Nargs nargs;
             Reader reader;
 
@@ -3408,7 +3458,7 @@ namespace args
             typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
             NargsValueFlag(Group &group_, const std::string &name_, const std::string &help_, Matcher &&matcher_, Nargs nargs_, const List<T> &defaultValues_ = {}, Options options_ = {})
-                : FlagBase(name_, help_, std::move(matcher_), options_), values(defaultValues_), nargs(nargs_)
+                : FlagBase(name_, help_, std::move(matcher_), options_), values(defaultValues_), defaultValues(defaultValues_),nargs(nargs_)
             {
                 group_.Add(*this);
             }
@@ -3473,6 +3523,23 @@ namespace args
             {
                 return values.cend();
             }
+
+            virtual void Reset() noexcept override
+            {
+                FlagBase::Reset();
+                values = defaultValues;
+            }
+
+            virtual FlagBase *Match(const EitherFlag &arg) override
+            {
+                const bool wasMatched = Matched();
+                auto me = FlagBase::Match(arg);
+                if (me && !wasMatched)
+                {
+                    values.clear();
+                }
+                return me;
+            }
     };
 
     /** An argument-accepting flag class that pushes the found values into a list
@@ -3490,6 +3557,7 @@ namespace args
         private:
             using Container = List<T>;
             Container values;
+            const Container defaultValues;
             Reader reader;
 
         public:
@@ -3508,7 +3576,7 @@ namespace args
             typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
             ValueFlagList(Group &group_, const std::string &name_, const std::string &help_, Matcher &&matcher_, const Container &defaultValues_ = Container(), Options options_ = {}):
-                ValueFlagBase(name_, help_, std::move(matcher_), options_), values(defaultValues_)
+                ValueFlagBase(name_, help_, std::move(matcher_), options_), values(defaultValues_), defaultValues(defaultValues_)
             {
                 group_.Add(*this);
             }
@@ -3546,7 +3614,18 @@ namespace args
             virtual void Reset() noexcept override
             {
                 ValueFlagBase::Reset();
-                values.clear();
+                values = defaultValues;
+            }
+
+            virtual FlagBase *Match(const EitherFlag &arg) override
+            {
+                const bool wasMatched = Matched();
+                auto me = FlagBase::Match(arg);
+                if (me && !wasMatched)
+                {
+                    values.clear();
+                }
+                return me;
             }
 
             iterator begin() noexcept
@@ -3597,6 +3676,7 @@ namespace args
         private:
             const Map<K, T> map;
             T value;
+            const T defaultValue;
             Reader reader;
 
         protected:
@@ -3607,7 +3687,7 @@ namespace args
 
         public:
 
-            MapFlag(Group &group_, const std::string &name_, const std::string &help_, Matcher &&matcher_, const Map<K, T> &map_, const T &defaultValue_, Options options_): ValueFlagBase(name_, help_, std::move(matcher_), options_), map(map_), value(defaultValue_)
+            MapFlag(Group &group_, const std::string &name_, const std::string &help_, Matcher &&matcher_, const Map<K, T> &map_, const T &defaultValue_, Options options_): ValueFlagBase(name_, help_, std::move(matcher_), options_), map(map_), value(defaultValue_), defaultValue(defaultValue_)
             {
                 group_.Add(*this);
             }
@@ -3638,11 +3718,12 @@ namespace args
                 auto it = map.find(key);
                 if (it == std::end(map))
                 {
-#ifdef ARGS_NOEXCEPT
-                    error = Error::Map;
-#else
                     std::ostringstream problem;
                     problem << "Could not find key '" << key << "' in map for arg '" << name << "'";
+#ifdef ARGS_NOEXCEPT
+                    error = Error::Map;
+                    errorMsg = problem.str();
+#else
                     throw MapError(problem.str());
 #endif
                 } else
@@ -3656,6 +3737,12 @@ namespace args
             T &Get() noexcept
             {
                 return value;
+            }
+
+            virtual void Reset() noexcept override
+            {
+                ValueFlagBase::Reset();
+                value = defaultValue;
             }
     };
 
@@ -3679,6 +3766,7 @@ namespace args
             using Container = List<T>;
             const Map<K, T> map;
             Container values;
+            const Container defaultValues;
             Reader reader;
 
         protected:
@@ -3701,7 +3789,7 @@ namespace args
             typedef std::reverse_iterator<iterator> reverse_iterator;
             typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
-            MapFlagList(Group &group_, const std::string &name_, const std::string &help_, Matcher &&matcher_, const Map<K, T> &map_, const Container &defaultValues_ = Container()): ValueFlagBase(name_, help_, std::move(matcher_)), map(map_), values(defaultValues_)
+            MapFlagList(Group &group_, const std::string &name_, const std::string &help_, Matcher &&matcher_, const Map<K, T> &map_, const Container &defaultValues_ = Container()): ValueFlagBase(name_, help_, std::move(matcher_)), map(map_), values(defaultValues_), defaultValues(defaultValues_)
             {
                 group_.Add(*this);
             }
@@ -3724,11 +3812,12 @@ namespace args
                 auto it = map.find(key);
                 if (it == std::end(map))
                 {
-#ifdef ARGS_NOEXCEPT
-                    error = Error::Map;
-#else
                     std::ostringstream problem;
                     problem << "Could not find key '" << key << "' in map for arg '" << name << "'";
+#ifdef ARGS_NOEXCEPT
+                    error = Error::Map;
+                    errorMsg = problem.str();
+#else
                     throw MapError(problem.str());
 #endif
                 } else
@@ -3752,7 +3841,18 @@ namespace args
             virtual void Reset() noexcept override
             {
                 ValueFlagBase::Reset();
-                values.clear();
+                values = defaultValues;
+            }
+
+            virtual FlagBase *Match(const EitherFlag &arg) override
+            {
+                const bool wasMatched = Matched();
+                auto me = FlagBase::Match(arg);
+                if (me && !wasMatched)
+                {
+                    values.clear();
+                }
+                return me;
             }
 
             iterator begin() noexcept
@@ -3798,9 +3898,10 @@ namespace args
     {
         private:
             T value;
+            const T defaultValue;
             Reader reader;
         public:
-            Positional(Group &group_, const std::string &name_, const std::string &help_, const T &defaultValue_ = T(), Options options_ = {}): PositionalBase(name_, help_, options_), value(defaultValue_)
+            Positional(Group &group_, const std::string &name_, const std::string &help_, const T &defaultValue_ = T(), Options options_ = {}): PositionalBase(name_, help_, options_), value(defaultValue_), defaultValue(defaultValue_)
             {
                 group_.Add(*this);
             }
@@ -3831,6 +3932,12 @@ namespace args
             {
                 return value;
             }
+
+            virtual void Reset() noexcept override
+            {
+                PositionalBase::Reset();
+                value = defaultValue;
+            }
     };
 
     /** A positional argument class that pushes the found values into a list
@@ -3848,6 +3955,7 @@ namespace args
         private:
             using Container = List<T>;
             Container values;
+            const Container defaultValues;
             Reader reader;
 
         public:
@@ -3864,7 +3972,7 @@ namespace args
             typedef std::reverse_iterator<iterator> reverse_iterator;
             typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
-            PositionalList(Group &group_, const std::string &name_, const std::string &help_, const Container &defaultValues_ = Container(), Options options_ = {}): PositionalBase(name_, help_, options_), values(defaultValues_)
+            PositionalList(Group &group_, const std::string &name_, const std::string &help_, const Container &defaultValues_ = Container(), Options options_ = {}): PositionalBase(name_, help_, options_), values(defaultValues_), defaultValues(defaultValues_)
             {
                 group_.Add(*this);
             }
@@ -3905,7 +4013,18 @@ namespace args
             virtual void Reset() noexcept override
             {
                 PositionalBase::Reset();
-                values.clear();
+                values = defaultValues;
+            }
+
+            virtual PositionalBase *GetNextPositional() override
+            {
+                const bool wasMatched = Matched();
+                auto me = PositionalBase::GetNextPositional();
+                if (me && !wasMatched)
+                {
+                    values.clear();
+                }
+                return me;
             }
 
             iterator begin() noexcept
@@ -3956,6 +4075,7 @@ namespace args
         private:
             const Map<K, T> map;
             T value;
+            const T defaultValue;
             Reader reader;
 
         protected:
@@ -3967,7 +4087,7 @@ namespace args
         public:
 
             MapPositional(Group &group_, const std::string &name_, const std::string &help_, const Map<K, T> &map_, const T &defaultValue_ = T(), Options options_ = {}):
-                PositionalBase(name_, help_, options_), map(map_), value(defaultValue_)
+                PositionalBase(name_, help_, options_), map(map_), value(defaultValue_), defaultValue(defaultValue_)
             {
                 group_.Add(*this);
             }
@@ -3988,11 +4108,12 @@ namespace args
                 auto it = map.find(key);
                 if (it == std::end(map))
                 {
-#ifdef ARGS_NOEXCEPT
-                    error = Error::Map;
-#else
                     std::ostringstream problem;
                     problem << "Could not find key '" << key << "' in map for arg '" << name << "'";
+#ifdef ARGS_NOEXCEPT
+                    error = Error::Map;
+                    errorMsg = problem.str();
+#else
                     throw MapError(problem.str());
 #endif
                 } else
@@ -4008,6 +4129,12 @@ namespace args
             T &Get() noexcept
             {
                 return value;
+            }
+
+            virtual void Reset() noexcept override
+            {
+                PositionalBase::Reset();
+                value = defaultValue;
             }
     };
 
@@ -4032,6 +4159,7 @@ namespace args
 
             const Map<K, T> map;
             Container values;
+            const Container defaultValues;
             Reader reader;
 
         protected:
@@ -4055,7 +4183,7 @@ namespace args
             typedef std::reverse_iterator<const_iterator> const_reverse_iterator;
 
             MapPositionalList(Group &group_, const std::string &name_, const std::string &help_, const Map<K, T> &map_, const Container &defaultValues_ = Container(), Options options_ = {}):
-                PositionalBase(name_, help_, options_), map(map_), values(defaultValues_)
+                PositionalBase(name_, help_, options_), map(map_), values(defaultValues_), defaultValues(defaultValues_)
             {
                 group_.Add(*this);
             }
@@ -4076,11 +4204,12 @@ namespace args
                 auto it = map.find(key);
                 if (it == std::end(map))
                 {
-#ifdef ARGS_NOEXCEPT
-                    error = Error::Map;
-#else
                     std::ostringstream problem;
                     problem << "Could not find key '" << key << "' in map for arg '" << name << "'";
+#ifdef ARGS_NOEXCEPT
+                    error = Error::Map;
+                    errorMsg = problem.str();
+#else
                     throw MapError(problem.str());
 #endif
                 } else
@@ -4105,7 +4234,18 @@ namespace args
             virtual void Reset() noexcept override
             {
                 PositionalBase::Reset();
-                values.clear();
+                values = defaultValues;
+            }
+
+            virtual PositionalBase *GetNextPositional() override
+            {
+                const bool wasMatched = Matched();
+                auto me = PositionalBase::GetNextPositional();
+                if (me && !wasMatched)
+                {
+                    values.clear();
+                }
+                return me;
             }
 
             iterator begin() noexcept

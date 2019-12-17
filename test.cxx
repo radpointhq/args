@@ -137,6 +137,46 @@ TEST_CASE("Argument flag lists work as expected", "[args]")
     REQUIRE((args::get(foo) == std::vector<int>{7, 2, 9, 42}));
 }
 
+TEST_CASE("Argument flag lists use default values", "[args]")
+{
+    args::ArgumentParser parser("This is a test program.", "This goes after the options.");
+    args::ValueFlagList<int> foo(parser, "FOO", "test flag", {'f', "foo"}, {9, 7, 5});
+    parser.ParseArgs(std::vector<std::string>());
+    REQUIRE((args::get(foo) == std::vector<int>{9, 7, 5}));
+}
+
+TEST_CASE("Argument flag lists replace default values", "[args]")
+{
+    args::ArgumentParser parser("This is a test program.", "This goes after the options.");
+    args::ValueFlagList<int> foo(parser, "FOO", "test flag", {'f', "foo"}, {9, 7, 5});
+    parser.ParseArgs(std::vector<std::string>{"--foo=7", "-f2", "-f", "9", "--foo", "42"});
+    REQUIRE((args::get(foo) == std::vector<int>{7, 2, 9, 42}));
+}
+
+TEST_CASE("Positional lists work as expected", "[args]")
+{
+    args::ArgumentParser parser("This is a test program.", "This goes after the options.");
+    args::PositionalList<int> foo(parser, "FOO", "test flag");
+    parser.ParseArgs(std::vector<std::string>{"7", "2", "9", "42"});
+    REQUIRE((args::get(foo) == std::vector<int>{7, 2, 9, 42}));
+}
+
+TEST_CASE("Positional lists use default values", "[args]")
+{
+    args::ArgumentParser parser("This is a test program.", "This goes after the options.");
+    args::PositionalList<int> foo(parser, "FOO", "test flag", {9, 7, 5});
+    parser.ParseArgs(std::vector<std::string>());
+    REQUIRE((args::get(foo) == std::vector<int>{9, 7, 5}));
+}
+
+TEST_CASE("Positional lists replace default values", "[args]")
+{
+    args::ArgumentParser parser("This is a test program.", "This goes after the options.");
+    args::PositionalList<int> foo(parser, "FOO", "test flag", {9, 7, 5});
+    parser.ParseArgs(std::vector<std::string>{"7", "2", "9", "42"});
+    REQUIRE((args::get(foo) == std::vector<int>{7, 2, 9, 42}));
+}
+
 #include <unordered_set>
 
 TEST_CASE("Argument flag lists work with sets", "[args]")
@@ -896,6 +936,25 @@ TEST_CASE("Subparser validation works as expected", "[args]")
     REQUIRE_THROWS_AS(p.ParseArgs(std::vector<std::string>{"unknown-command"}), args::ParseError);
 }
 
+TEST_CASE("Subparser group validation works as expected", "[args]")
+{
+    int x = 0;
+    args::ArgumentParser p("parser");
+    args::Command a(p, "a", "command a", [&](args::Subparser &s)
+    {
+        args::Group required(s, "", args::Group::Validators::All);
+        args::ValueFlag<std::string> f(required, "", "", {'f'});
+        s.Parse();
+        ++x;
+    });
+
+    p.RequireCommand(false);
+    REQUIRE_NOTHROW(p.ParseArgs(std::vector<std::string>{}));
+    REQUIRE_NOTHROW(p.ParseArgs(std::vector<std::string>{"a", "-f", "F"}));
+    REQUIRE_THROWS_AS(p.ParseArgs(std::vector<std::string>{"a"}), args::ValidationError);
+    REQUIRE(x == 1);
+}
+
 TEST_CASE("Global options work as expected", "[args]")
 {
     args::Group globals;
@@ -1133,6 +1192,8 @@ TEST_CASE("ValueParser works as expected", "[args]")
     args::ValueFlag<std::string> f(p, "name", "description", {'f'});
     args::ValueFlag<StringAssignable> b(p, "name", "description", {'b'});
     args::ValueFlag<int> i(p, "name", "description", {'i'});
+    args::ValueFlag<int> d(p, "name", "description", {'d'});
+    args::PositionalList<double> ds(p, "name", "description");
 
     REQUIRE_NOTHROW(p.ParseArgs(std::vector<std::string>{"-f", "a b"}));
     REQUIRE(args::get(f) == "a b");
@@ -1145,6 +1206,11 @@ TEST_CASE("ValueParser works as expected", "[args]")
 
     REQUIRE_NOTHROW(p.ParseArgs(std::vector<std::string>{"-i", " 12"}));
     REQUIRE(args::get(i) == 12);
+
+    REQUIRE_THROWS_AS(p.ParseArgs(std::vector<std::string>{"-i", "a"}), args::ParseError);
+    REQUIRE_THROWS_AS(p.ParseArgs(std::vector<std::string>{"-d", "b"}), args::ParseError);
+    REQUIRE_THROWS_AS(p.ParseArgs(std::vector<std::string>{"c"}), args::ParseError);
+    REQUIRE_THROWS_AS(p.ParseArgs(std::vector<std::string>{"s"}), args::ParseError);
 }
 
 TEST_CASE("ActionFlag works as expected", "[args]")
